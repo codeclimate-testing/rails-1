@@ -1,5 +1,6 @@
-class Liquid < ActiveRecord::Base
-  set_table_name :liquid
-  has_many :molecules, :uniq => true
-end
+# frozen_string_literal: true
 
+class Liquid < ActiveRecord::Base
+  self.table_name = :liquid
+  has_many :molecules, -> { distinct }
+end

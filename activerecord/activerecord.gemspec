@@ -1,28 +1,40 @@
-version = File.read(File.expand_path("../../RAILS_VERSION", __FILE__)).strip
+# frozen_string_literal: true
+
+version = File.read(File.expand_path("../RAILS_VERSION", __dir__)).strip
 
 Gem::Specification.new do |s|
   s.platform    = Gem::Platform::RUBY
-  s.name        = 'activerecord'
+  s.name        = "activerecord"
   s.version     = version
-  s.summary     = 'Object-relational mapper framework (part of Rails).'
-  s.description = 'Databases on Rails. Build a persistent domain model by mapping database tables to Ruby classes. Strong conventions for associations, validations, aggregations, migrations, and testing come baked-in.'
+  s.summary     = "Object-relational mapper framework (part of Rails)."
+  s.description = "Databases on Rails. Build a persistent domain model by mapping database tables to Ruby classes. Strong conventions for associations, validations, aggregations, migrations, and testing come baked-in."
 
-  s.required_ruby_version = '>= 1.8.7'
+  s.required_ruby_version = ">= 2.7.0"
 
-  s.author            = 'David Heinemeier Hansson'
-  s.email             = 'david@loudthinking.com'
-  s.homepage          = 'http://www.rubyonrails.org'
-  s.rubyforge_project = 'activerecord'
+  s.license = "MIT"
 
-  s.files        = Dir['CHANGELOG', 'README.rdoc', 'examples/**/*', 'lib/**/*']
-  s.require_path = 'lib'
+  s.author   = "David Heinemeier Hansson"
+  s.email    = "david@loudthinking.com"
+  s.homepage = "https://rubyonrails.org"
 
-  s.has_rdoc         = true
-  s.extra_rdoc_files = %w( README.rdoc )
-  s.rdoc_options.concat ['--main',  'README.rdoc']
+  s.files        = Dir["CHANGELOG.md", "MIT-LICENSE", "README.rdoc", "examples/**/*", "lib/**/*"]
+  s.require_path = "lib"
 
-  s.add_dependency('activesupport', version)
-  s.add_dependency('activemodel',   version)
-  s.add_dependency('arel',          '~> 1.0.0')
-  s.add_dependency('tzinfo',        '~> 0.3.23')
+  s.extra_rdoc_files = %w(README.rdoc)
+  s.rdoc_options.concat ["--main",  "README.rdoc"]
+
+  s.metadata = {
+    "bug_tracker_uri"   => "https://github.com/rails/rails/issues",
+    "changelog_uri"     => "https://github.com/rails/rails/blob/v#{version}/activerecord/CHANGELOG.md",
+    "documentation_uri" => "https://api.rubyonrails.org/v#{version}/",
+    "mailing_list_uri"  => "https://discuss.rubyonrails.org/c/rubyonrails-talk",
+    "source_code_uri"   => "https://github.com/rails/rails/tree/v#{version}/activerecord",
+    "rubygems_mfa_required" => "true",
+  }
+
+  # NOTE: Please read our dependency guidelines before updating versions:
+  # https://edgeguides.rubyonrails.org/security.html#dependency-management-and-cves
+
+  s.add_dependency "activesupport", version
+  s.add_dependency "activemodel",   version
 end

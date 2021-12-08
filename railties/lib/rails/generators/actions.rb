@@ -1,120 +1,145 @@
-require 'open-uri'
-require 'active_support/deprecation'
-require 'rbconfig'
+# frozen_string_literal: true
+
+require "shellwords"
+require "active_support/core_ext/kernel/reporting"
+require "active_support/core_ext/string/strip"
 
 module Rails
   module Generators
     module Actions
-
-      # Install a plugin. You must provide either a Subversion url or Git url.
-      #
-      # For a Git-hosted plugin, you can specify a branch and
-      # whether it should be added as a submodule instead of cloned.
-      #
-      # For a Subversion-hosted plugin you can specify a revision.
-      #
-      # ==== Examples
-      #
-      #   plugin 'restful-authentication', :git => 'git://github.com/technoweenie/restful-authentication.git'
-      #   plugin 'restful-authentication', :git => 'git://github.com/technoweenie/restful-authentication.git', :branch => 'stable'
-      #   plugin 'restful-authentication', :git => 'git://github.com/technoweenie/restful-authentication.git', :submodule => true
-      #   plugin 'restful-authentication', :svn => 'svn://svnhub.com/technoweenie/restful-authentication/trunk'
-      #   plugin 'restful-authentication', :svn => 'svn://svnhub.com/technoweenie/restful-authentication/trunk', :revision => 1234
-      #
-      def plugin(name, options)
-        log :plugin, name
-
-        if options[:git] && options[:submodule]
-          options[:git] = "-b #{options[:branch]} #{options[:git]}" if options[:branch]
-          in_root do
-            run "git submodule add #{options[:git]} vendor/plugins/#{name}", :verbose => false
-          end
-        elsif options[:git] || options[:svn]
-          options[:git] = "-b #{options[:branch]} #{options[:git]}"   if options[:branch]
-          options[:svn] = "-r #{options[:revision]} #{options[:svn]}" if options[:revision]
-          in_root do
-            run_ruby_script "script/rails plugin install #{options[:svn] || options[:git]}", :verbose => false
-          end
-        else
-          log "! no git or svn provided for #{name}. Skipping..."
-        end
+      def initialize(*) # :nodoc:
+        super
+        @indentation = 0
       end
 
-      # Adds an entry into Gemfile for the supplied gem. If env
-      # is specified, add the gem to the given environment.
+      # Adds an entry into +Gemfile+ for the supplied gem.
       #
-      # ==== Example
-      #
-      #   gem "rspec", :env => :test
-      #   gem "technoweenie-restful-authentication", :lib => "restful-authentication", :source => "http://gems.github.com/"
-      #   gem "rails", "3.0", :git => "git://github.com/rails/rails"
-      #
+      #   gem "rspec", group: :test
+      #   gem "technoweenie-restful-authentication", lib: "restful-authentication", source: "http://gems.github.com/"
+      #   gem "rails", "3.0", git: "https://github.com/rails/rails"
+      #   gem "RedCloth", ">= 4.1.0", "< 4.2.0"
+      #   gem "rspec", comment: "Put this comment above the gem declaration"
       def gem(*args)
         options = args.extract_options!
-        name, version = args
-
-        # Deal with deprecated options
-        { :env => :group, :only => :group,
-          :lib => :require, :require_as => :require }.each do |old, new|
-          next unless options[old]
-          options[new] = options.delete(old)
-          ActiveSupport::Deprecation.warn "#{old.inspect} option in gem is deprecated, use #{new.inspect} instead"
-        end
-
-        # Deal with deprecated source
-        if source = options.delete(:source)
-          ActiveSupport::Deprecation.warn ":source option in gem is deprecated, use add_source method instead"
-          add_source(source)
-        end
+        name, *versions = args
 
         # Set the message to be shown in logs. Uses the git repo if one is given,
         # otherwise use name (version).
-        parts, message = [ name.inspect ], name
-        if version ||= options.delete(:version)
-          parts   << version.inspect
-          message << " (#{version})"
+        parts, message = [ quote(name) ], name.dup
+
+        # Output a comment above the gem declaration.
+        comment = options.delete(:comment)
+
+        if versions = versions.any? ? versions : options.delete(:version)
+          _versions = Array(versions)
+          _versions.each do |version|
+            parts << quote(version)
+          end
+          message << " (#{_versions.join(", ")})"
         end
         message = options[:git] if options[:git]
 
         log :gemfile, message
 
-        options.each do |option, value|
-          parts << ":#{option} => #{value.inspect}"
-        end
+        parts << quote(options) unless options.empty?
 
         in_root do
-          append_file "Gemfile", "gem #{parts.join(", ")}\n", :verbose => false
+          str = []
+          if comment
+            comment.each_line do |comment_line|
+              str << indentation
+              str << "# #{comment_line}"
+            end
+            str << "\n"
+          end
+          str << indentation
+          str << "gem #{parts.join(", ")}"
+          append_file_with_newline "Gemfile", str.join, verbose: false
         end
       end
 
-      # Add the given source to Gemfile
+      # Wraps gem entries inside a group.
       #
-      # ==== Example
+      #   gem_group :development, :test do
+      #     gem "rspec-rails"
+      #   end
+      def gem_group(*names, &block)
+        options = names.extract_options!
+        str = names.map(&:inspect)
+        str << quote(options) unless options.empty?
+        str = str.join(", ")
+        log :gemfile, "group #{str}"
+
+        in_root do
+          append_file_with_newline "Gemfile", "\ngroup #{str} do", force: true
+          with_indentation(&block)
+          append_file_with_newline "Gemfile", "end", force: true
+        end
+      end
+
+      def github(repo, options = {}, &block)
+        str = [quote(repo)]
+        str << quote(options) unless options.empty?
+        str = str.join(", ")
+        log :github, "github #{str}"
+
+        in_root do
+          if @indentation.zero?
+            append_file_with_newline "Gemfile", "\ngithub #{str} do", force: true
+          else
+            append_file_with_newline "Gemfile", "#{indentation}github #{str} do", force: true
+          end
+          with_indentation(&block)
+          append_file_with_newline "Gemfile", "#{indentation}end", force: true
+        end
+      end
+
+      # Add the given source to +Gemfile+
+      #
+      # If block is given, gem entries in block are wrapped into the source group.
       #
       #   add_source "http://gems.github.com/"
-      def add_source(source, options={})
+      #
+      #   add_source "http://gems.github.com/" do
+      #     gem "rspec-rails"
+      #   end
+      def add_source(source, options = {}, &block)
         log :source, source
 
         in_root do
-          prepend_file "Gemfile", "source #{source.inspect}\n", :verbose => false
+          if block
+            append_file_with_newline "Gemfile", "\nsource #{quote(source)} do", force: true
+            with_indentation(&block)
+            append_file_with_newline "Gemfile", "end", force: true
+          else
+            prepend_file "Gemfile", "source #{quote(source)}\n", verbose: false
+          end
         end
       end
 
-      # Adds a line inside the Application class for config/application.rb.
+      # Adds a line inside the Application class for <tt>config/application.rb</tt>.
       #
-      # If options :env is specified, the line is appended to the corresponding
-      # file in config/environments.
+      # If options <tt>:env</tt> is specified, the line is appended to the corresponding
+      # file in <tt>config/environments</tt>.
       #
-      def environment(data=nil, options={}, &block)
-        sentinel = /class [a-z_:]+ < Rails::Application/i
-        data = block.call if !data && block_given?
+      #   environment do
+      #     "config.asset_host = 'cdn.provider.com'"
+      #   end
+      #
+      #   environment(nil, env: "development") do
+      #     "config.asset_host = 'localhost:3000'"
+      #   end
+      def environment(data = nil, options = {})
+        sentinel = "class Application < Rails::Application\n"
+        env_file_sentinel = "Rails.application.configure do\n"
+        data ||= yield if block_given?
 
         in_root do
           if options[:env].nil?
-            inject_into_file 'config/application.rb', "\n  #{data}", :after => sentinel, :verbose => false
+            inject_into_file "config/application.rb", optimize_indentation(data, 4), after: sentinel, verbose: false
           else
-            Array.wrap(options[:env]).each do|env|
-              append_file "config/environments/#{env}.rb", "\n#{data}", :verbose => false
+            Array(options[:env]).each do |env|
+              inject_into_file "config/environments/#{env}.rb", optimize_indentation(data, 2), after: env_file_sentinel, verbose: false
             end
           end
         end
@@ -123,26 +148,21 @@ module Rails
 
       # Run a command in git.
       #
-      # ==== Examples
-      #
       #   git :init
-      #   git :add => "this.file that.rb"
-      #   git :add => "onefile.rb", :rm => "badfile.cxx"
-      #
-      def git(command={})
-        if command.is_a?(Symbol)
-          run "git #{command}"
+      #   git add: "this.file that.rb"
+      #   git add: "onefile.rb", rm: "badfile.cxx"
+      def git(commands = {})
+        if commands.is_a?(Symbol)
+          run "git #{commands}"
         else
-          command.each do |command, options|
-            run "git #{command} #{options}"
+          commands.each do |cmd, options|
+            run "git #{cmd} #{options}"
           end
         end
       end
 
-      # Create a new file in the vendor/ directory. Code can be specified
+      # Create a new file in the <tt>vendor/</tt> directory. Code can be specified
       # in a block or a data string can be given.
-      #
-      # ==== Examples
       #
       #   vendor("sekrit.rb") do
       #     sekrit_salt = "#{Time.now}--#{3.years.ago}--#{rand}--"
@@ -150,31 +170,27 @@ module Rails
       #   end
       #
       #   vendor("foreign.rb", "# Foreign code is fun")
-      #
-      def vendor(filename, data=nil, &block)
+      def vendor(filename, data = nil)
         log :vendor, filename
-        create_file("vendor/#{filename}", data, :verbose => false, &block)
+        data ||= yield if block_given?
+        create_file("vendor/#{filename}", optimize_indentation(data), verbose: false)
       end
 
-      # Create a new file in the lib/ directory. Code can be specified
+      # Create a new file in the <tt>lib/</tt> directory. Code can be specified
       # in a block or a data string can be given.
-      #
-      # ==== Examples
       #
       #   lib("crypto.rb") do
       #     "crypted_special_value = '#{rand}--#{Time.now}--#{rand(1337)}--'"
       #   end
       #
       #   lib("foreign.rb", "# Foreign code is fun")
-      #
-      def lib(filename, data=nil, &block)
+      def lib(filename, data = nil)
         log :lib, filename
-        create_file("lib/#{filename}", data, :verbose => false, &block)
+        data ||= yield if block_given?
+        create_file("lib/#{filename}", optimize_indentation(data), verbose: false)
       end
 
-      # Create a new Rakefile with the provided code (either in a block or a string).
-      #
-      # ==== Examples
+      # Create a new +Rakefile+ with the provided code (either in a block or a string).
       #
       #   rakefile("bootstrap.rake") do
       #     project = ask("What is the UNIX name of your project?")
@@ -182,140 +198,195 @@ module Rails
       #     <<-TASK
       #       namespace :#{project} do
       #         task :bootstrap do
-      #           puts "i like boots!"
+      #           puts "I like boots!"
       #         end
       #       end
       #     TASK
       #   end
       #
-      #   rakefile("seed.rake", "puts 'im plantin ur seedz'")
-      #
-      def rakefile(filename, data=nil, &block)
+      #   rakefile('seed.rake', 'puts "Planting seeds"')
+      def rakefile(filename, data = nil)
         log :rakefile, filename
-        create_file("lib/tasks/#{filename}", data, :verbose => false, &block)
+        data ||= yield if block_given?
+        create_file("lib/tasks/#{filename}", optimize_indentation(data), verbose: false)
       end
 
       # Create a new initializer with the provided code (either in a block or a string).
       #
-      # ==== Examples
-      #
       #   initializer("globals.rb") do
       #     data = ""
       #
-      #     ['MY_WORK', 'ADMINS', 'BEST_COMPANY_EVAR'].each do
-      #       data << "#{const} = :entp"
+      #     ['MY_WORK', 'ADMINS', 'BEST_COMPANY_EVAR'].each do |const|
+      #       data << "#{const} = :entp\n"
       #     end
       #
       #     data
       #   end
       #
       #   initializer("api.rb", "API_KEY = '123456'")
-      #
-      def initializer(filename, data=nil, &block)
+      def initializer(filename, data = nil)
         log :initializer, filename
-        create_file("config/initializers/#{filename}", data, :verbose => false, &block)
+        data ||= yield if block_given?
+        create_file("config/initializers/#{filename}", optimize_indentation(data), verbose: false)
       end
 
       # Generate something using a generator from Rails or a plugin.
       # The second parameter is the argument string that is passed to
       # the generator or an Array that is joined.
       #
-      # ==== Example
-      #
       #   generate(:authenticated, "user session")
-      #
       def generate(what, *args)
         log :generate, what
-        argument = args.map {|arg| arg.to_s }.flatten.join(" ")
 
-        in_root { run_ruby_script("script/rails generate #{what} #{argument}", :verbose => false) }
+        options = args.extract_options!
+        options[:abort_on_failure] = !options[:inline]
+
+        rails_command "generate #{what} #{args.join(" ")}", options
       end
 
-      # Runs the supplied rake task
-      #
-      # ==== Example
+      # Runs the supplied rake task (invoked with 'rake ...')
       #
       #   rake("db:migrate")
-      #   rake("db:migrate", :env => "production")
-      #   rake("gems:install", :sudo => true)
-      #
-      def rake(command, options={})
-        log :rake, command
-        env  = options[:env] || 'development'
-        sudo = options[:sudo] && RbConfig::CONFIG['host_os'] !~ /mswin|mingw/ ? 'sudo ' : ''
-        in_root { run("#{sudo}#{extify(:rake)} #{command} RAILS_ENV=#{env}", :verbose => false) }
+      #   rake("db:migrate", env: "production")
+      #   rake("gems:install", sudo: true)
+      #   rake("gems:install", capture: true)
+      def rake(command, options = {})
+        execute_command :rake, command, options
       end
 
-      # Just run the capify command in root
+      # Runs the supplied rake task (invoked with 'rails ...')
       #
-      # ==== Example
-      #
-      #   capify!
-      #
-      def capify!
-        log :capify, ""
-        in_root { run("#{extify(:capify)} .", :verbose => false) }
+      #   rails_command("db:migrate")
+      #   rails_command("db:migrate", env: "production")
+      #   rails_command("gems:install", sudo: true)
+      #   rails_command("gems:install", capture: true)
+      def rails_command(command, options = {})
+        if options[:inline]
+          log :rails, command
+          command, *args = Shellwords.split(command)
+          in_root do
+            silence_warnings do
+              ::Rails::Command.invoke(command, args, **options)
+            end
+          end
+        else
+          execute_command :rails, command, options
+        end
       end
 
-      # Add Rails to /vendor/rails
+      # Make an entry in Rails routing file <tt>config/routes.rb</tt>
       #
-      # ==== Example
-      #
-      #   freeze!
-      #
-      def freeze!(args={})
-        ActiveSupport::Deprecation.warn "freeze! is deprecated since your rails app now comes bundled with Rails by default, please check your Gemfile"
-      end
+      #   route "root 'welcome#index'"
+      #   route "root 'admin#index'", namespace: :admin
+      def route(routing_code, namespace: nil)
+        routing_code = Array(namespace).reverse.reduce(routing_code) do |code, ns|
+          "namespace :#{ns} do\n#{optimize_indentation(code, 2)}end"
+        end
 
-      # Make an entry in Rails routing file config/routes.rb
-      #
-      # === Example
-      #
-      #   route "root :to => 'welcome'"
-      #
-      def route(routing_code)
         log :route, routing_code
-        sentinel = /\.routes\.draw do(?:\s*\|map\|)?\s*$/
+
+        after_pattern = Array(namespace).each_with_index.reverse_each.reduce(nil) do |pattern, (ns, i)|
+          margin = "\\#{i + 1}[ ]{2}"
+          "(?:(?:^[ ]*\n|^#{margin}.*\n)*?^(#{margin})namespace :#{ns} do\n#{pattern})?"
+        end.then do |pattern|
+          /^([ ]*).+\.routes\.draw do[ ]*\n#{pattern}/
+        end
 
         in_root do
-          inject_into_file 'config/routes.rb', "\n  #{routing_code}\n", { :after => sentinel, :verbose => false }
+          if existing = match_file("config/routes.rb", after_pattern)
+            base_indent, *, prev_indent = existing.captures.compact.map(&:length)
+            routing_code = optimize_indentation(routing_code, base_indent + 2).lines.grep_v(/^[ ]{,#{prev_indent}}\S/).join
+          end
+
+          inject_into_file "config/routes.rb", routing_code, after: after_pattern, verbose: false, force: false
         end
       end
 
       # Reads the given file at the source root and prints it in the console.
       #
-      # === Example
-      #
       #   readme "README"
-      #
       def readme(path)
-        say File.read(find_in_source_paths(path))
+        log File.read(find_in_source_paths(path))
       end
 
-      protected
-
+      private
         # Define log for backwards compatibility. If just one argument is sent,
-        # invoke say, otherwise invoke say_status.
-        #
-        def log(*args)
+        # invoke say, otherwise invoke say_status. Differently from say and
+        # similarly to say_status, this method respects the quiet? option given.
+        def log(*args) # :doc:
           if args.size == 1
-            say args.first.to_s
+            say args.first.to_s unless options.quiet?
           else
-            args << (self.behavior == :invoke ? :green : :red)
-            say_status *args
+            args << (behavior == :invoke ? :green : :red)
+            say_status(*args)
           end
         end
 
+        # Runs the supplied command using either "rake ..." or "rails ..."
+        # based on the executor parameter provided.
+        def execute_command(executor, command, options = {}) # :doc:
+          log executor, command
+          sudo = options[:sudo] && !Gem.win_platform? ? "sudo " : ""
+          config = {
+            env: { "RAILS_ENV" => (options[:env] || ENV["RAILS_ENV"] || "development") },
+            verbose: false,
+            capture: options[:capture],
+            abort_on_failure: options[:abort_on_failure],
+          }
+
+          in_root { run("#{sudo}#{extify(executor)} #{command}", config) }
+        end
+
         # Add an extension to the given name based on the platform.
-        #
-        def extify(name)
-          if RbConfig::CONFIG['host_os'] =~ /mswin|mingw/
+        def extify(name) # :doc:
+          if Gem.win_platform?
             "#{name}.bat"
           else
             name
           end
         end
 
+        # Always returns value in double quotes.
+        def quote(value) # :doc:
+          if value.respond_to? :each_pair
+            return value.map do |k, v|
+              "#{k}: #{quote(v)}"
+            end.join(", ")
+          end
+          return value.inspect unless value.is_a? String
+
+          "\"#{value.tr("'", '"')}\""
+        end
+
+        # Returns optimized string with indentation
+        def optimize_indentation(value, amount = 0) # :doc:
+          return "#{value}\n" unless value.is_a?(String)
+          "#{value.strip_heredoc.indent(amount).chomp}\n"
+        end
+
+        # Indent the +Gemfile+ to the depth of @indentation
+        def indentation # :doc:
+          "  " * @indentation
+        end
+
+        # Manage +Gemfile+ indentation for a DSL action block
+        def with_indentation(&block) # :doc:
+          @indentation += 1
+          instance_eval(&block)
+        ensure
+          @indentation -= 1
+        end
+
+        # Append string to a file with a newline if necessary
+        def append_file_with_newline(path, str, options = {})
+          gsub_file path, /\n?\z/, options do |match|
+            match.end_with?("\n") ? "" : "\n#{str}\n"
+          end
+        end
+
+        def match_file(path, pattern)
+          File.read(path).match(pattern) if File.exist?(path)
+        end
     end
   end
 end

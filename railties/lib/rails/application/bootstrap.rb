@@ -1,75 +1,96 @@
+# frozen_string_literal: true
+
+require "fileutils"
 require "active_support/notifications"
+require "active_support/dependencies"
 require "active_support/descendants_tracker"
+require "rails/secrets"
 
 module Rails
   class Application
     module Bootstrap
       include Initializable
 
-      initializer :load_environment_config do
-        environment = config.paths.config.environments.to_a.first
-        require environment if environment
-      end
+      initializer :load_environment_hook, group: :all do end
 
-      initializer :load_active_support do
-        require 'active_support/dependencies'
+      initializer :load_active_support, group: :all do
+        ENV["RAILS_DISABLE_DEPRECATED_TO_S_CONVERSION"] = "true" if config.active_support.disable_to_s_conversion
         require "active_support/all" unless config.active_support.bare
       end
 
-      # Preload all frameworks specified by the Configuration#frameworks.
-      # Used by Passenger to ensure everything's loaded before forking and
-      # to avoid autoload race conditions in JRuby.
-      initializer :preload_frameworks do
-        ActiveSupport::Autoload.eager_autoload! if config.preload_frameworks
+      initializer :set_eager_load, group: :all do
+        if config.eager_load.nil?
+          warn <<~INFO
+            config.eager_load is set to nil. Please update your config/environments/*.rb files accordingly:
+
+              * development - set it to false
+              * test - set it to false (unless you use a tool that preloads your test environment)
+              * production - set it to true
+
+          INFO
+          config.eager_load = config.cache_classes
+        end
       end
 
       # Initialize the logger early in the stack in case we need to log some deprecation.
-      initializer :initialize_logger do
+      initializer :initialize_logger, group: :all do
         Rails.logger ||= config.logger || begin
-          path = config.paths.log.to_a.first
-          logger = ActiveSupport::BufferedLogger.new(path)
-          logger.level = ActiveSupport::BufferedLogger.const_get(config.log_level.to_s.upcase)
-          logger.auto_flushing = false if Rails.env.production?
+          logger = ActiveSupport::Logger.new(config.default_log_file)
+          logger.formatter = config.log_formatter
+          logger = ActiveSupport::TaggedLogging.new(logger)
           logger
-        rescue StandardError => e
-          logger = ActiveSupport::BufferedLogger.new(STDERR)
-          logger.level = ActiveSupport::BufferedLogger::WARN
+        rescue StandardError
+          path = config.paths["log"].first
+          logger = ActiveSupport::TaggedLogging.new(ActiveSupport::Logger.new(STDERR))
+          logger.level = ActiveSupport::Logger::WARN
           logger.warn(
-            "Rails Error: Unable to access log file. Please ensure that #{path} exists and is chmod 0666. " +
+            "Rails Error: Unable to access log file. Please ensure that #{path} exists and is writable " \
+            "(i.e. make it writable for user and group: chmod 0664 #{path}). " \
             "The log level has been raised to WARN and the output directed to STDERR until the problem is fixed."
           )
           logger
         end
+        Rails.logger.level = ActiveSupport::Logger.const_get(config.log_level.to_s.upcase)
+
+        unless config.consider_all_requests_local
+          Rails.error.logger = Rails.logger
+        end
       end
 
       # Initialize cache early in the stack so railties can make use of it.
-      initializer :initialize_cache do
-        unless defined?(RAILS_CACHE)
-          silence_warnings { Object.const_set "RAILS_CACHE", ActiveSupport::Cache.lookup_store(config.cache_store) }
+      initializer :initialize_cache, group: :all do
+        unless Rails.cache
+          Rails.cache = ActiveSupport::Cache.lookup_store(*config.cache_store)
 
-          if RAILS_CACHE.respond_to?(:middleware)
-            config.middleware.insert_before("Rack::Runtime", RAILS_CACHE.middleware)
+          if Rails.cache.respond_to?(:middleware)
+            config.middleware.insert_before(::Rack::Runtime, Rails.cache.middleware)
           end
         end
       end
 
-      initializer :set_clear_dependencies_hook do
-        unless config.cache_classes
-          ActionDispatch::Callbacks.after do
-            ActiveSupport::DescendantsTracker.clear
-            ActiveSupport::Dependencies.clear
-          end
+      # We setup the once autoloader this early so that engines and applications
+      # are able to autoload from these paths during initialization.
+      initializer :setup_once_autoloader, after: :set_eager_load_paths, before: :bootstrap_hook do
+        autoloader = Rails.autoloaders.once
+
+        ActiveSupport::Dependencies.autoload_once_paths.freeze
+        ActiveSupport::Dependencies.autoload_once_paths.uniq.each do |path|
+          # Zeitwerk only accepts existing directories in `push_dir`.
+          next unless File.directory?(path)
+
+          autoloader.push_dir(path)
+          autoloader.do_not_eager_load(path) unless ActiveSupport::Dependencies.eager_load?(path)
         end
+
+        autoloader.setup
       end
 
-      # Sets the dependency loading mechanism.
-      # TODO: Remove files from the $" and always use require.
-      initializer :initialize_dependency_mechanism do
-        ActiveSupport::Dependencies.mechanism = config.cache_classes ? :require : :load
-      end
-
-      initializer :bootstrap_hook do |app|
+      initializer :bootstrap_hook, group: :all do |app|
         ActiveSupport.run_load_hooks(:before_initialize, app)
+      end
+
+      initializer :set_secrets_root, group: :all do
+        Rails::Secrets.root = root
       end
     end
   end

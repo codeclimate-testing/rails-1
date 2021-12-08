@@ -1,52 +1,50 @@
-# Make double-sure the RAILS_ENV is set to test,
-# so fixtures are loaded to the right database
-abort("Abort testing: Your Rails environment is not running in test mode!") unless Rails.env.test?
+# frozen_string_literal: true
 
-require 'test/unit'
-require 'active_support/core_ext/kernel/requires'
-require 'active_support/test_case'
-require 'action_controller/test_case'
-require 'action_dispatch/testing/integration'
+# Make double-sure the RAILS_ENV is not set to production,
+# so fixtures aren't loaded into that environment
+abort("Abort testing: Your Rails environment is running in production mode!") if Rails.env.production?
 
-if defined?(Test::Unit::Util::BacktraceFilter) && ENV['BACKTRACE'].nil?
-  require 'rails/backtrace_cleaner'
-  Test::Unit::Util::BacktraceFilter.module_eval { include Rails::BacktraceFilterForTestUnit }
-end
+require "active_support/test_case"
+require "action_controller"
+require "action_controller/test_case"
+require "action_dispatch/testing/integration"
+require "rails/generators/test_case"
 
-if defined?(ActiveRecord)
-  require 'active_record/test_case'
+require "active_support/testing/autorun"
 
-  class ActiveSupport::TestCase
+if defined?(ActiveRecord::Base)
+  begin
+    ActiveRecord::Migration.maintain_test_schema!
+  rescue ActiveRecord::PendingMigrationError => e
+    puts e.to_s.strip
+    exit 1
+  end
+
+  ActiveSupport.on_load(:active_support_test_case) do
+    include ActiveRecord::TestDatabases
     include ActiveRecord::TestFixtures
+
     self.fixture_path = "#{Rails.root}/test/fixtures/"
+    self.file_fixture_path = fixture_path + "files"
   end
 
-  ActionController::IntegrationTest.fixture_path = ActiveSupport::TestCase.fixture_path
-
-  def create_fixtures(*table_names, &block)
-    Fixtures.create_fixtures(ActiveSupport::TestCase.fixture_path, table_names, {}, &block)
+  ActiveSupport.on_load(:action_dispatch_integration_test) do
+    self.fixture_path = ActiveSupport::TestCase.fixture_path
   end
 end
 
-class ActionController::TestCase
-  setup do
+# :enddoc:
+
+ActiveSupport.on_load(:action_controller_test_case) do
+  def before_setup # :nodoc:
     @routes = Rails.application.routes
+    super
   end
 end
 
-class ActionDispatch::IntegrationTest
-  setup do
+ActiveSupport.on_load(:action_dispatch_integration_test) do
+  def before_setup # :nodoc:
     @routes = Rails.application.routes
+    super
   end
-end
-
-begin
-  require_library_or_gem 'ruby-debug'
-  Debugger.start
-  if Debugger.respond_to?(:settings)
-    Debugger.settings[:autoeval] = true
-    Debugger.settings[:autolist] = 1
-  end
-rescue LoadError
-  # ruby-debug wasn't available so neither can the debugging be
 end

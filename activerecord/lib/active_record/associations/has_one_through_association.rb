@@ -1,40 +1,45 @@
-require "active_record/associations/through_association_scope"
+# frozen_string_literal: true
 
 module ActiveRecord
-  # = Active Record Has One Through Association
   module Associations
-    class HasOneThroughAssociation < HasOneAssociation
-      include ThroughAssociationScope
-
-      def replace(new_value)
-        create_through_record(new_value)
-        @target = new_value
-      end
+    # = Active Record Has One Through Association
+    class HasOneThroughAssociation < HasOneAssociation # :nodoc:
+      include ThroughAssociation
 
       private
+        def replace(record, save = true)
+          create_through_record(record, save)
+          self.target = record
+        end
 
-      def create_through_record(new_value) #nodoc:
-        klass = @reflection.through_reflection.klass
+        def create_through_record(record, save)
+          ensure_not_nested
 
-        current_object = @owner.send(@reflection.through_reflection.name)
+          through_proxy  = through_association
+          through_record = through_proxy.load_target
 
-        if current_object
-           new_value ? current_object.update_attributes(construct_join_attributes(new_value)) : current_object.destroy
-        elsif new_value
-          if @owner.new_record?
-            self.target = new_value
-            through_association = @owner.send(:association_instance_get, @reflection.through_reflection.name)
-            through_association.build(construct_join_attributes(new_value))
-          else
-            @owner.send(@reflection.through_reflection.name, klass.create(construct_join_attributes(new_value)))
+          if through_record && !record
+            through_record.destroy
+          elsif record
+            attributes = construct_join_attributes(record)
+
+            if through_record && through_record.destroyed?
+              through_record = through_proxy.tap(&:reload).target
+            end
+
+            if through_record
+              if through_record.new_record?
+                through_record.assign_attributes(attributes)
+              else
+                through_record.update(attributes)
+              end
+            elsif owner.new_record? || !save
+              through_proxy.build(attributes)
+            else
+              through_proxy.create(attributes)
+            end
           end
         end
-      end
-
-    private
-      def find_target
-        with_scope(construct_scope) { @reflection.klass.find(:first) }
-      end
     end
   end
 end
