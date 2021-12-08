@@ -1,50 +1,34 @@
+# frozen_string_literal: true
+
 module ActionDispatch
-  # Provide callbacks to be executed before and after the request dispatch.
-  #
-  # It also provides a to_prepare callback, which is performed in all requests
-  # in development by only once in production and notification callback for async
-  # operations.
-  #
+  # Provides callbacks to be executed before and after dispatching the request.
   class Callbacks
     include ActiveSupport::Callbacks
 
-    define_callbacks :call, :rescuable => true
-    define_callbacks :prepare, :scope => :name
+    define_callbacks :call
 
-    # Add a preparation callback. Preparation callbacks are run before every
-    # request in development mode, and before the first request in production mode.
-    #
-    # If a symbol with a block is given, the symbol is used as an identifier.
-    # That allows to_prepare to be called again with the same identifier to
-    # replace the existing callback. Passing an identifier is a suggested
-    # practice if the code adding a preparation block may be reloaded.
-    def self.to_prepare(*args, &block)
-      if args.first.is_a?(Symbol) && block_given?
-        define_method :"__#{args.first}", &block
-        set_callback(:prepare, :"__#{args.first}")
-      else
-        set_callback(:prepare, *args, &block)
+    class << self
+      def before(*args, &block)
+        set_callback(:call, :before, *args, &block)
+      end
+
+      def after(*args, &block)
+        set_callback(:call, :after, *args, &block)
       end
     end
 
-    def self.before(*args, &block)
-      set_callback(:call, :before, *args, &block)
-    end
-
-    def self.after(*args, &block)
-      set_callback(:call, :after, *args, &block)
-    end
-
-    def initialize(app, prepare_each_request = false)
-      @app, @prepare_each_request = app, prepare_each_request
-      _run_prepare_callbacks
+    def initialize(app)
+      @app = app
     end
 
     def call(env)
-      _run_call_callbacks do
-        _run_prepare_callbacks if @prepare_each_request
+      error = nil
+      result = run_callbacks :call do
         @app.call(env)
+      rescue => error
       end
+      raise error if error
+      result
     end
   end
 end

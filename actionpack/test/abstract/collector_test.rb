@@ -1,17 +1,19 @@
-require 'abstract_unit'
+# frozen_string_literal: true
+
+require "abstract_unit"
 
 module AbstractController
   module Testing
     class MyCollector
-      include Collector
+      include AbstractController::Collector
       attr_accessor :responses
 
       def initialize
         @responses = []
       end
 
-      def custom(mime, *args, &block)
-        @responses << [mime, args, block]
+      def custom(mime, *args, **kwargs, &block)
+        @responses << [mime, args, kwargs, block]
       end
     end
 
@@ -24,33 +26,39 @@ module AbstractController
 
       test "does not respond to unknown mime types" do
         collector = MyCollector.new
-        assert !collector.respond_to?(:unknown)
+        assert_not_respond_to collector, :unknown
       end
 
       test "register mime types on method missing" do
-        AbstractController::Collector.send(:remove_method, :js)
-        collector = MyCollector.new
-        assert !collector.respond_to?(:js)
-        collector.js
-        assert_respond_to collector, :js
+        AbstractController::Collector.remove_method :js
+        begin
+          collector = MyCollector.new
+          assert_not_respond_to collector, :js
+          collector.js
+          assert_respond_to collector, :js
+        ensure
+          unless AbstractController::Collector.method_defined? :js
+            AbstractController::Collector.generate_method_for_mime :js
+          end
+        end
       end
 
       test "does not register unknown mime types" do
         collector = MyCollector.new
-        assert_raise NameError do
+        assert_raise NoMethodError do
           collector.unknown
         end
       end
 
-      test "generated methods call custom with args received" do
+      test "generated methods call custom with arguments received" do
         collector = MyCollector.new
         collector.html
-        collector.text(:foo)
+        collector.text(:foo, bar: :baz)
         collector.js(:bar) { :baz }
-        assert_equal [Mime::HTML, [], nil], collector.responses[0]
-        assert_equal [Mime::TEXT, [:foo], nil], collector.responses[1]
-        assert_equal [Mime::JS, [:bar]], collector.responses[2][0,2]
-        assert_equal :baz, collector.responses[2][2].call
+        assert_equal [Mime[:html], [], {}, nil], collector.responses[0]
+        assert_equal [Mime[:text], [:foo], { bar: :baz }, nil], collector.responses[1]
+        assert_equal [Mime[:js], [:bar], {}], collector.responses[2][0, 3]
+        assert_equal :baz, collector.responses[2][3].call
       end
     end
   end

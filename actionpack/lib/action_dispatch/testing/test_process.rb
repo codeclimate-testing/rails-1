@@ -1,16 +1,36 @@
-require 'action_dispatch/middleware/flash'
-require 'active_support/core_ext/hash/indifferent_access'
+# frozen_string_literal: true
+
+require "action_dispatch/middleware/cookies"
+require "action_dispatch/middleware/flash"
 
 module ActionDispatch
   module TestProcess
-    def assigns(key = nil)
-      assigns = {}.with_indifferent_access
-      @controller.instance_variable_names.each do |ivar|
-        next if ActionController::Base.protected_instance_variables.include?(ivar)
-        assigns[ivar[1..-1]] = @controller.instance_variable_get(ivar)
-      end
+    module FixtureFile
+      # Shortcut for <tt>Rack::Test::UploadedFile.new(File.join(ActionDispatch::IntegrationTest.file_fixture_path, path), type)</tt>:
+      #
+      #   post :change_avatar, params: { avatar: fixture_file_upload('david.png', 'image/png') }
+      #
+      # Default fixture files location is <tt>test/fixtures/files</tt>.
+      #
+      # To upload binary files on Windows, pass <tt>:binary</tt> as the last parameter.
+      # This will not affect other platforms:
+      #
+      #   post :change_avatar, params: { avatar: fixture_file_upload('david.png', 'image/png', :binary) }
+      def fixture_file_upload(path, mime_type = nil, binary = false)
+        if self.class.file_fixture_path && !File.exist?(path)
+          path = file_fixture(path)
+        end
 
-      key.nil? ? assigns : assigns[key]
+        Rack::Test::UploadedFile.new(path, mime_type, binary)
+      end
+    end
+
+    include FixtureFile
+
+    def assigns(key = nil)
+      raise NoMethodError,
+        "assigns has been extracted to a gem. To continue using it,
+        add `gem 'rails-controller-testing'` to your Gemfile."
     end
 
     def session
@@ -22,24 +42,11 @@ module ActionDispatch
     end
 
     def cookies
-      @request.cookies.merge(@response.cookies)
+      @cookie_jar ||= Cookies::CookieJar.build(@request, @request.cookies)
     end
 
     def redirect_to_url
       @response.redirect_url
-    end
-
-    # Shortcut for <tt>ARack::Test::UploadedFile.new(ActionController::TestCase.fixture_path + path, type)</tt>:
-    #
-    #   post :change_avatar, :avatar => fixture_file_upload('/files/spongebob.png', 'image/png')
-    #
-    # To upload binary files on Windows, pass <tt>:binary</tt> as the last parameter.
-    # This will not affect other platforms:
-    #
-    #   post :change_avatar, :avatar => fixture_file_upload('/files/spongebob.png', 'image/png', :binary)
-    def fixture_file_upload(path, mime_type = nil, binary = false)
-      fixture_path = ActionController::TestCase.send(:fixture_path) if ActionController::TestCase.respond_to?(:fixture_path)
-      Rack::Test::UploadedFile.new("#{fixture_path}#{path}", mime_type, binary)
     end
   end
 end

@@ -1,56 +1,28 @@
+# frozen_string_literal: true
+
+require "action_dispatch/middleware/session/abstract_store"
+begin
+  require "rack/session/dalli"
+rescue LoadError => e
+  $stderr.puts "You don't have dalli installed in your application. Please add it to your Gemfile and run bundle install"
+  raise e
+end
+
 module ActionDispatch
   module Session
-    class MemCacheStore < AbstractStore
+    # A session store that uses MemCache to implement storage.
+    #
+    # ==== Options
+    # * <tt>expire_after</tt>  - The length of time a session will be stored before automatically expiring.
+    class MemCacheStore < Rack::Session::Dalli
+      include Compatibility
+      include StaleSessionCheck
+      include SessionObject
+
       def initialize(app, options = {})
-        require 'memcache'
-
-        # Support old :expires option
         options[:expire_after] ||= options[:expires]
-
-        super
-
-        @default_options = {
-          :namespace => 'rack:session',
-          :memcache_server => 'localhost:11211'
-        }.merge(@default_options)
-
-        @pool = options[:cache] || MemCache.new(@default_options[:memcache_server], @default_options)
-        unless @pool.servers.any? { |s| s.alive? }
-          raise "#{self} unable to find server during initialization."
-        end
-        @mutex = Mutex.new
-
         super
       end
-
-      private
-        def get_session(env, sid)
-          sid ||= generate_sid
-          begin
-            session = @pool.get(sid) || {}
-          rescue MemCache::MemCacheError, Errno::ECONNREFUSED
-            session = {}
-          end
-          [sid, session]
-        end
-
-        def set_session(env, sid, session_data)
-          options = env['rack.session.options']
-          expiry  = options[:expire_after] || 0
-          @pool.set(sid, session_data, expiry)
-          sid
-        rescue MemCache::MemCacheError, Errno::ECONNREFUSED
-          false
-        end
-
-        def destroy(env)
-          if sid = current_session_id(env)
-            @pool.delete(sid)
-          end
-        rescue MemCache::MemCacheError, Errno::ECONNREFUSED
-          false
-        end
-
     end
   end
 end

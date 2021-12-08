@@ -1,54 +1,45 @@
-require 'abstract_unit'
-require 'rails/backtrace_cleaner'
+# frozen_string_literal: true
 
-if defined? Test::Unit::Util::BacktraceFilter
-  class TestWithBacktrace
-    include Test::Unit::Util::BacktraceFilter
-    include Rails::BacktraceFilterForTestUnit
+require "abstract_unit"
+require "rails/backtrace_cleaner"
+
+class BacktraceCleanerTest < ActiveSupport::TestCase
+  def setup
+    @cleaner = Rails::BacktraceCleaner.new
   end
 
-  class BacktraceCleanerFilterTest < ActiveSupport::TestCase
-    def setup
-      @test = TestWithBacktrace.new
-      @backtrace = [ './test/rails/benchmark_test.rb', './test/rails/dependencies.rb', '/opt/local/lib/ruby/kernel.rb' ]
-    end
-
-    test "test with backtrace should use the rails backtrace cleaner to clean" do
-      Rails.stubs(:backtrace_cleaner).returns(stub(:clean))
-      Rails.backtrace_cleaner.expects(:clean).with(@backtrace, nil)
-      @test.send(:filter_backtrace, @backtrace)
-    end
-
-    test "filter backtrace should have the same arity as Test::Unit::Util::BacktraceFilter" do
-      assert_nothing_raised do
-        @test.send(:filter_backtrace, @backtrace, '/opt/local/lib')
-      end
-    end
+  test "should consider traces from irb lines as User code" do
+    backtrace = [ "(irb):1",
+                  "/Path/to/rails/railties/lib/rails/commands/console.rb:77:in `start'",
+                  "bin/rails:4:in `<main>'" ]
+    result = @cleaner.clean(backtrace)
+    assert_equal "(irb):1", result[0]
+    assert_equal 1, result.length
   end
-else
-  $stderr.puts 'No BacktraceFilter for minitest'
-end
 
-if defined? Gem
-  class BacktraceCleanerVendorGemTest < ActiveSupport::TestCase
-    def setup
-      @cleaner = Rails::BacktraceCleaner.new
-    end
+  test "should show relative paths" do
+    backtrace = [ "./test/backtrace_cleaner_test.rb:123",
+                  "/Path/to/rails/activesupport/some_testing_file.rb:42:in `test'",
+                  "bin/rails:4:in `<main>'" ]
+    result = @cleaner.clean(backtrace)
+    assert_equal "./test/backtrace_cleaner_test.rb:123", result[0]
+    assert_equal 1, result.length
+  end
 
-    test "should format installed gems correctly" do
-      @backtrace = [ "#{Gem.path[0]}/gems/nosuchgem-1.2.3/lib/foo.rb" ]
-      @result = @cleaner.clean(@backtrace, :all)
-      assert_equal "nosuchgem (1.2.3) lib/foo.rb", @result[0]
-    end
+  test "can filter for noise" do
+    backtrace = [ "(irb):1",
+                  "/Path/to/rails/railties/lib/rails/commands/console.rb:77:in `start'",
+                  "bin/rails:4:in `<main>'" ]
+    result = @cleaner.clean(backtrace, :noise)
+    assert_equal "/Path/to/rails/railties/lib/rails/commands/console.rb:77:in `start'", result[0]
+    assert_equal "bin/rails:4:in `<main>'", result[1]
+    assert_equal 2, result.length
+  end
 
-    test "should format installed gems not in Gem.default_dir correctly" do
-      @target_dir = Gem.path.detect { |p| p != Gem.default_dir }
-      # skip this test if default_dir is the only directory on Gem.path
-      if @target_dir
-        @backtrace = [ "#{@target_dir}/gems/nosuchgem-1.2.3/lib/foo.rb" ]
-        @result = @cleaner.clean(@backtrace, :all)
-        assert_equal "nosuchgem (1.2.3) lib/foo.rb", @result[0]
-      end
-    end
+  test "should omit ActionView template methods names" do
+    method_name = ActionView::Template.new(nil, "app/views/application/index.html.erb", nil, locals: []).send :method_name
+    backtrace = [ "app/views/application/index.html.erb:4:in `block in #{method_name}'"]
+    result = @cleaner.clean(backtrace, :all)
+    assert_equal "app/views/application/index.html.erb:4", result[0]
   end
 end

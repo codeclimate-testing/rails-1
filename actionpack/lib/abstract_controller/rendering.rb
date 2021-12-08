@@ -1,5 +1,9 @@
-require "abstract_controller/base"
+# frozen_string_literal: true
+
+require "abstract_controller/error"
 require "action_view"
+require "action_view/view_paths"
+require "set"
 
 module AbstractController
   class DoubleRenderError < Error
@@ -10,160 +14,114 @@ module AbstractController
     end
   end
 
-  # This is a class to fix I18n global state. Whenever you provide I18n.locale during a request,
-  # it will trigger the lookup_context and consequently expire the cache.
-  # TODO Add some deprecation warnings to remove I18n.locale from controllers
-  class I18nProxy < ::I18n::Config #:nodoc:
-    attr_reader :i18n_config, :lookup_context
-
-    def initialize(i18n_config, lookup_context)
-      @i18n_config, @lookup_context = i18n_config, lookup_context
-    end
-
-    def locale
-      @i18n_config.locale
-    end
-
-    def locale=(value)
-      @lookup_context.locale = value
-    end
-  end
-
   module Rendering
     extend ActiveSupport::Concern
+    include ActionView::ViewPaths
 
-    include AbstractController::ViewPaths
-
-    # Overwrite process to setup I18n proxy.
-    def process(*) #:nodoc:
-      old_config, I18n.config = I18n.config, I18nProxy.new(I18n.config, lookup_context)
-      super
-    ensure
-      I18n.config = old_config
-    end
-
-    module ClassMethods
-      def view_context_class
-        @view_context_class ||= begin
-          controller = self
-          Class.new(ActionView::Base) do
-            if controller.respond_to?(:_helpers)
-              include controller._helpers
-
-              if controller.respond_to?(:_routes)
-                include controller._routes.url_helpers
-              end
-
-              # TODO: Fix RJS to not require this
-              self.helpers = controller._helpers
-            end
-          end
-        end
-      end
-    end
-
-    attr_writer :view_context_class
-
-    def view_context_class
-      @view_context_class || self.class.view_context_class
-    end
-
-    def initialize(*)
-      @view_context_class = nil
-      super
-    end
-
-    # An instance of a view class. The default view class is ActionView::Base
-    #
-    # The view class must have the following methods:
-    # View.new[lookup_context, assigns, controller]
-    #   Create a new ActionView instance for a controller
-    # View#render[options]
-    #   Returns String with the rendered template
-    #
-    # Override this method in a module to change the default behavior.
-    def view_context
-      view_context_class.new(lookup_context, view_assigns, self)
-    end
-
-    # Normalize arguments, options and then delegates render_to_body and
-    # sticks the result in self.response_body.
+    # Normalizes arguments, options and then delegates render_to_body and
+    # sticks the result in <tt>self.response_body</tt>.
     def render(*args, &block)
-      self.response_body = render_to_string(*args, &block)
+      options = _normalize_render(*args, &block)
+      rendered_body = render_to_body(options)
+      if options[:html]
+        _set_html_content_type
+      else
+        _set_rendered_content_type rendered_format
+      end
+      _set_vary_header
+      self.response_body = rendered_body
     end
 
-    # Raw rendering of a template to a string. Just convert the results of
-    # render_to_body into a String.
-    # :api: plugin
+    # Raw rendering of a template to a string.
+    #
+    # It is similar to render, except that it does not
+    # set the +response_body+ and it should be guaranteed
+    # to always return a string.
+    #
+    # If a component extends the semantics of +response_body+
+    # (as ActionController extends it to be anything that
+    # responds to the method each), this method needs to be
+    # overridden in order to still return a string.
     def render_to_string(*args, &block)
-      options = _normalize_args(*args, &block)
-      _normalize_options(options)
+      options = _normalize_render(*args, &block)
       render_to_body(options)
     end
 
-    # Raw rendering of a template to a Rack-compatible body.
-    # :api: plugin
+    # Performs the actual template rendering.
     def render_to_body(options = {})
-      _process_options(options)
-      _render_template(options)
     end
 
-    # Find and renders a template based on the options given.
-    # :api: private
-    def _render_template(options) #:nodoc:
-      view_context.render(options)
+    # Returns Content-Type of rendered content.
+    def rendered_format
+      Mime[:text]
     end
 
-    # The prefix used in render "foo" shortcuts.
-    def _prefix
-      controller_path
-    end
-
-  private
+    DEFAULT_PROTECTED_INSTANCE_VARIABLES = %i(@_action_name @_response_body @_formats @_prefixes)
 
     # This method should return a hash with assigns.
     # You can overwrite this configuration per controller.
-    # :api: public
     def view_assigns
-      hash = {}
-      variables  = instance_variable_names
-      variables -= protected_instance_variables if respond_to?(:protected_instance_variables)
-      variables.each { |name| hash[name.to_s[1..-1]] = instance_variable_get(name) }
-      hash
+      variables = instance_variables - _protected_ivars
+
+      variables.each_with_object({}) do |name, hash|
+        hash[name.slice(1, name.length)] = instance_variable_get(name)
+      end
     end
 
-    # Normalize options by converting render "foo" to render :action => "foo" and
-    # render "foo/bar" to render :file => "foo/bar".
-    def _normalize_args(action=nil, options={})
-      case action
-      when NilClass
-      when Hash
-        options, action = action, nil
-      when String, Symbol
-        action = action.to_s
-        key = action.include?(?/) ? :file : :action
-        options[key] = action
+  private
+    # Normalize args by converting <tt>render "foo"</tt> to
+    # <tt>render :action => "foo"</tt> and <tt>render "foo/bar"</tt> to
+    # <tt>render :file => "foo/bar"</tt>.
+    def _normalize_args(action = nil, options = {}) # :doc:
+      if action.respond_to?(:permitted?)
+        if action.permitted?
+          action
+        else
+          raise ArgumentError, "render parameters are not permitted"
+        end
+      elsif action.is_a?(Hash)
+        action
       else
-        options.merge!(:partial => action)
+        options
       end
+    end
 
+    # Normalize options.
+    def _normalize_options(options) # :doc:
       options
     end
 
-    def _normalize_options(options)
-      if options[:partial] == true
-        options[:partial] = action_name
-      end
-
-      if (options.keys & [:partial, :file, :template]).empty?
-        options[:prefix] ||= _prefix
-      end
-
-      options[:template] ||= (options[:action] || action_name).to_s
+    # Process extra options.
+    def _process_options(options) # :doc:
       options
     end
 
-    def _process_options(options)
+    # Process the rendered format.
+    def _process_format(format) # :nodoc:
+    end
+
+    def _process_variant(options)
+    end
+
+    def _set_html_content_type # :nodoc:
+    end
+
+    def _set_vary_header # :nodoc:
+    end
+
+    def _set_rendered_content_type(format) # :nodoc:
+    end
+
+    # Normalize args and options.
+    def _normalize_render(*args, &block) # :nodoc:
+      options = _normalize_args(*args, &block)
+      _process_variant(options)
+      _normalize_options(options)
+      options
+    end
+
+    def _protected_ivars
+      DEFAULT_PROTECTED_INSTANCE_VARIABLES
     end
   end
 end

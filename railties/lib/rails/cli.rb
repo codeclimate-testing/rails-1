@@ -1,14 +1,19 @@
-require 'rbconfig'
-require 'rails/script_rails_loader'
+# frozen_string_literal: true
+
+require "rails/app_loader"
 
 # If we are inside a Rails application this method performs an exec and thus
 # the rest of this script is not run.
-Rails::ScriptRailsLoader.exec_script_rails!
+Rails::AppLoader.exec_app
 
-railties_path = File.expand_path('../../lib', __FILE__)
-$:.unshift(railties_path) if File.directory?(railties_path) && !$:.include?(railties_path)
+require "rails/ruby_version_check"
+Signal.trap("INT") { puts; exit(1) }
 
-require 'rails/ruby_version_check'
-Signal.trap("INT") { puts; exit }
+require "rails/command"
 
-require 'rails/commands/application'
+if ARGV.first == "plugin"
+  ARGV.shift
+  Rails::Command.invoke :plugin, ARGV
+else
+  Rails::Command.invoke :application, ARGV
+end

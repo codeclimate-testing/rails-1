@@ -1,8 +1,10 @@
-require 'abstract_unit'
+# frozen_string_literal: true
+
+require "abstract_unit"
 
 module MiddlewareTest
   class MyMiddleware
-    def initialize(app)
+    def initialize(app, kw: nil)
       @app = app
     end
 
@@ -15,20 +17,37 @@ module MiddlewareTest
   end
 
   class ExclaimerMiddleware
-    def initialize(app)
+    def initialize(app, kw: nil)
       @app = app
     end
 
     def call(env)
       result = @app.call(env)
-      result[1]["Middleware-Order"] << "!"
+      result[1]["Middleware-Order"] += "!"
+      result
+    end
+  end
+
+  class BlockMiddleware
+    attr_accessor :configurable_message
+    def initialize(app, &block)
+      @app = app
+      yield(self) if block_given?
+    end
+
+    def call(env)
+      result = @app.call(env)
+      result[1]["Configurable-Message"] = configurable_message
       result
     end
   end
 
   class MyController < ActionController::Metal
-    use MyMiddleware
-    middleware.insert_before MyMiddleware, ExclaimerMiddleware
+    use BlockMiddleware do |config|
+      config.configurable_message = "Configured by block."
+    end
+    use MyMiddleware, kw: 1
+    middleware.insert_before MyMiddleware, ExclaimerMiddleware, kw: 1
 
     def index
       self.response_body = "Hello World"
@@ -39,8 +58,8 @@ module MiddlewareTest
   end
 
   class ActionsController < ActionController::Metal
-    use MyMiddleware, :only => :show
-    middleware.insert_before MyMiddleware, ExclaimerMiddleware, :except => :index
+    use MyMiddleware, only: :show, kw: 1
+    middleware.insert_before MyMiddleware, ExclaimerMiddleware, except: :index, kw: 1
 
     def index
       self.response_body = "index"
@@ -58,13 +77,18 @@ module MiddlewareTest
 
     test "middleware that is 'use'd is called as part of the Rack application" do
       result = @app.call(env_for("/"))
-      assert_equal "Hello World", RackTestUtils.body_to_string(result[2])
+      assert_equal ["Hello World"], [].tap { |a| result[2].each { |x| a << x } }
       assert_equal "Success", result[1]["Middleware-Test"]
     end
 
     test "the middleware stack is exposed as 'middleware' in the controller" do
       result = @app.call(env_for("/"))
       assert_equal "First!", result[1]["Middleware-Order"]
+    end
+
+    test "middleware stack accepts block arguments" do
+      result = @app.call(env_for("/"))
+      assert_equal "Configured by block.", result[1]["Configurable-Message"]
     end
 
     test "middleware stack accepts only and except as options" do

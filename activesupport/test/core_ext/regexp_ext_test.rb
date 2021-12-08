@@ -1,7 +1,9 @@
-require 'abstract_unit'
-require 'active_support/core_ext/regexp'
+# frozen_string_literal: true
 
-class RegexpExtAccessTests < Test::Unit::TestCase
+require_relative "../abstract_unit"
+require "active_support/core_ext/regexp"
+
+class RegexpExtAccessTests < ActiveSupport::TestCase
   def test_multiline
     assert_equal true, //m.multiline?
     assert_equal false, //.multiline?

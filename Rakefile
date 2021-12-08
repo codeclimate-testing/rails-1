@@ -1,46 +1,32 @@
-gem 'rdoc', '>= 2.5.10'
-require 'rdoc'
+# frozen_string_literal: true
 
-require 'rake'
-require 'rdoc/task'
-require 'rake/gempackagetask'
+require "net/http"
 
-# RDoc skips some files in the Rails tree due to its binary? predicate. This is a quick
-# hack for edge docs, until we decide which is the correct way to address this issue.
-# If not fixed in RDoc itself, via an option or something, we should probably move this
-# to railties and use it also in doc:rails.
-def hijack_rdoc!
-  require "rdoc/parser"
-  class << RDoc::Parser
-    def binary?(file)
-      s = File.read(file, 1024) or return false
+$:.unshift __dir__
+require "tasks/release"
+require "railties/lib/rails/api/task"
 
-      if s[0, 2] == Marshal.dump('')[0, 2] then
-        true
-      elsif file =~ /erb\.rb$/ then
-        false
-      elsif s.index("\x00") then # ORIGINAL is s.scan(/<%|%>/).length >= 4 || s.index("\x00")
-        true
-      elsif 0.respond_to? :fdiv then
-        s.count("^ -~\t\r\n").fdiv(s.size) > 0.3
-      else # HACK 1.8.6
-        (s.count("^ -~\t\r\n").to_f / s.size) > 0.3
-      end
-    end
-  end
-end
+desc "Build gem files for all projects"
+task build: "all:build"
 
-PROJECTS = %w(activesupport activemodel actionpack actionmailer activeresource activerecord railties)
+desc "Build, install and verify the gem files in a generated Rails app."
+task verify: "all:verify"
 
-desc 'Run all tests by default'
-task :default => %w(test test:isolated)
+desc "Prepare the release"
+task prep_release: "all:prep_release"
+
+desc "Release all gems to rubygems and create a tag"
+task release: "all:release"
+
+desc "Run all tests by default"
+task default: %w(test test:isolated)
 
 %w(test test:isolated package gem).each do |task_name|
   desc "Run #{task_name} task for all projects"
   task task_name do
     errors = []
-    PROJECTS.each do |project|
-      system(%(cd #{project} && #{$0} #{task_name})) || errors << project
+    FRAMEWORKS.each do |project|
+      system(%(cd #{project} && #{$0} #{task_name} --trace)) || errors << project
     end
     fail("Errors in #{errors.join(', ')}") unless errors.empty?
   end
@@ -48,126 +34,39 @@ end
 
 desc "Smoke-test all projects"
 task :smoke do
-  (PROJECTS - %w(activerecord)).each do |project|
-    system %(cd #{project} && #{$0} test:isolated)
+  (FRAMEWORKS - %w(activerecord)).each do |project|
+    system %(cd #{project} && #{$0} test:isolated --trace)
   end
-  system %(cd activerecord && #{$0} sqlite3:isolated_test)
-end
-
-spec = eval(File.read('rails.gemspec'))
-Rake::GemPackageTask.new(spec) do |pkg|
-  pkg.gem_spec = spec
-end
-
-desc "Release all gems to gemcutter. Package rails, package & push components, then push rails"
-task :release => :release_projects do
-  require 'rake/gemcutter'
-  Rake::Gemcutter::Tasks.new(spec).define
-  Rake::Task['gem:push'].invoke
-end
-
-desc "Release all components to gemcutter."
-task :release_projects => :package do
-  errors = []
-  PROJECTS.each do |project|
-    system(%(cd #{project} && #{$0} release)) || errors << project
-  end
-  fail("Errors in #{errors.join(', ')}") unless errors.empty?
+  system %(cd activerecord && #{$0} sqlite3:isolated_test --trace)
 end
 
 desc "Install gems for all projects."
-task :install => :gem do
-  version = File.read("RAILS_VERSION").strip
-  (PROJECTS - ["railties"]).each do |project|
-    puts "INSTALLING #{project}"
-    system("gem install #{project}/pkg/#{project}-#{version}.gem --no-ri --no-rdoc")
-  end
-  system("gem install railties/pkg/railties-#{version}.gem --no-ri --no-rdoc")
-  system("gem install pkg/rails-#{version}.gem --no-ri --no-rdoc")
-end
+task install: "all:install"
 
 desc "Generate documentation for the Rails framework"
-RDoc::Task.new do |rdoc|
-  hijack_rdoc!
-
-  rdoc.rdoc_dir = 'doc/rdoc'
-  rdoc.title    = "Ruby on Rails Documentation"
-
-  rdoc.options << '-f' << 'horo'
-  rdoc.options << '-c' << 'utf-8'
-  rdoc.options << '-m' << 'README.rdoc'
-
-  rdoc.rdoc_files.include('README.rdoc')
-
-  rdoc.rdoc_files.include('railties/CHANGELOG')
-  rdoc.rdoc_files.include('railties/MIT-LICENSE')
-  rdoc.rdoc_files.include('railties/README.rdoc')
-  rdoc.rdoc_files.include('railties/lib/**/*.rb')
-  rdoc.rdoc_files.exclude('railties/lib/rails/generators/**/templates/*')
-
-  rdoc.rdoc_files.include('activerecord/README.rdoc')
-  rdoc.rdoc_files.include('activerecord/CHANGELOG')
-  rdoc.rdoc_files.include('activerecord/lib/active_record/**/*.rb')
-  rdoc.rdoc_files.exclude('activerecord/lib/active_record/vendor/*')
-
-  rdoc.rdoc_files.include('activeresource/README.rdoc')
-  rdoc.rdoc_files.include('activeresource/CHANGELOG')
-  rdoc.rdoc_files.include('activeresource/lib/active_resource.rb')
-  rdoc.rdoc_files.include('activeresource/lib/active_resource/*')
-
-  rdoc.rdoc_files.include('actionpack/README.rdoc')
-  rdoc.rdoc_files.include('actionpack/CHANGELOG')
-  rdoc.rdoc_files.include('actionpack/lib/abstract_controller/**/*.rb')
-  rdoc.rdoc_files.include('actionpack/lib/action_controller/**/*.rb')
-  rdoc.rdoc_files.include('actionpack/lib/action_dispatch/**/*.rb')
-  rdoc.rdoc_files.include('actionpack/lib/action_view/**/*.rb')
-  rdoc.rdoc_files.exclude('actionpack/lib/action_controller/vendor/*')
-
-  rdoc.rdoc_files.include('actionmailer/README.rdoc')
-  rdoc.rdoc_files.include('actionmailer/CHANGELOG')
-  rdoc.rdoc_files.include('actionmailer/lib/action_mailer/base.rb')
-  rdoc.rdoc_files.exclude('actionmailer/lib/action_mailer/vendor/*')
-
-  rdoc.rdoc_files.include('activesupport/README.rdoc')
-  rdoc.rdoc_files.include('activesupport/CHANGELOG')
-  rdoc.rdoc_files.include('activesupport/lib/active_support/**/*.rb')
-  rdoc.rdoc_files.exclude('activesupport/lib/active_support/vendor/*')
-
-  rdoc.rdoc_files.include('activemodel/README.rdoc')
-  rdoc.rdoc_files.include('activemodel/CHANGELOG')
-  rdoc.rdoc_files.include('activemodel/lib/active_model/**/*.rb')
+if ENV["EDGE"]
+  Rails::API::EdgeTask.new("rdoc")
+else
+  Rails::API::StableTask.new("rdoc")
 end
 
-# Enhance rdoc task to copy referenced images also
-task :rdoc do
-  FileUtils.mkdir_p "doc/rdoc/files/examples/"
-  FileUtils.copy "activerecord/examples/associations.png", "doc/rdoc/files/examples/associations.png"
-end
+desc "Bump all versions to match RAILS_VERSION"
+task update_versions: "all:update_versions"
 
-task :update_versions do
-  require File.dirname(__FILE__) + "/version"
-
-  File.open("RAILS_VERSION", "w") do |f|
-    f.write Rails::VERSION::STRING + "\n"
-  end
-
-  constants = {
-    "activesupport"   => "ActiveSupport",
-    "activemodel"     => "ActiveModel",
-    "actionpack"      => "ActionPack",
-    "actionmailer"    => "ActionMailer",
-    "activeresource"  => "ActiveResource",
-    "activerecord"    => "ActiveRecord",
-    "railties"        => "Rails"
-  }
-
-  version_file = File.read("version.rb")
-
-  PROJECTS.each do |project|
-    Dir["#{project}/lib/*/version.rb"].each do |file|
-      File.open(file, "w") do |f|
-        f.write version_file.gsub(/Rails/, constants[project])
-      end
-    end
+# We have a webhook configured in GitHub that gets invoked after pushes.
+# This hook triggers the following tasks:
+#
+#   * updates the local checkout
+#   * updates Rails Contributors
+#   * generates and publishes edge docs
+#   * if there's a new stable tag, generates and publishes stable docs
+#
+# Everything is automated and you do NOT need to run this task normally.
+desc "Publishes docs, run this AFTER a new stable tag has been pushed"
+task :publish_docs do
+  Net::HTTP.new("api.rubyonrails.org", 8080).start do |http|
+    request  = Net::HTTP::Post.new("/rails-master-hook")
+    response = http.request(request)
+    puts response.body
   end
 end

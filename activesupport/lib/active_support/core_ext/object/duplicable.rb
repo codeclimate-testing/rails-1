@@ -1,6 +1,9 @@
-# Most objects are cloneable, but not all. For example you can't dup +nil+:
+# frozen_string_literal: true
+
+#--
+# Most objects are cloneable, but not all. For example you can't dup methods:
 #
-#   nil.dup # => TypeError: can't dup NilClass
+#   method(:puts).dup # => TypeError: allocator undefined for Method
 #
 # Classes may signal their instances are not duplicable removing +dup+/+clone+
 # or raising exceptions from them. So, to dup an arbitrary object you normally
@@ -14,51 +17,43 @@
 #
 # That's why we hardcode the following cases and check duplicable? instead of
 # using that rescue idiom.
+#++
 class Object
-  # Can you safely .dup this object?
-  # False for nil, false, true, symbols, numbers, class and module objects; true otherwise.
+  # Can you safely dup this object?
+  #
+  # False for method objects;
+  # true otherwise.
   def duplicable?
     true
   end
 end
 
-class NilClass #:nodoc:
+class Method
+  # Methods are not duplicable:
+  #
+  #  method(:puts).duplicable? # => false
+  #  method(:puts).dup         # => TypeError: allocator undefined for Method
   def duplicable?
     false
   end
 end
 
-class FalseClass #:nodoc:
+class UnboundMethod
+  # Unbound methods are not duplicable:
+  #
+  #  method(:puts).unbind.duplicable? # => false
+  #  method(:puts).unbind.dup         # => TypeError: allocator undefined for UnboundMethod
   def duplicable?
     false
   end
 end
 
-class TrueClass #:nodoc:
-  def duplicable?
-    false
-  end
-end
+require "singleton"
 
-class Symbol #:nodoc:
-  def duplicable?
-    false
-  end
-end
-
-class Numeric #:nodoc:
-  def duplicable?
-    false
-  end
-end
-
-class Class #:nodoc:
-  def duplicable?
-    false
-  end
-end
-
-class Module #:nodoc:
+module Singleton
+  # Singleton instances are not duplicable:
+  #
+  # Class.new.include(Singleton).instance.dup # TypeError (can't dup instance of singleton
   def duplicable?
     false
   end

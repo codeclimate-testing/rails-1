@@ -1,5 +1,7 @@
+# frozen_string_literal: true
+
 module ActiveRecord
-  # = Active Record Timestamp
+  # = Active Record \Timestamp
   #
   # Active Record automatically timestamps create and update operations if the
   # table has fields named <tt>created_at/created_on</tt> or
@@ -7,82 +9,155 @@ module ActiveRecord
   #
   # Timestamping can be turned off by setting:
   #
-  #   <tt>ActiveRecord::Base.record_timestamps = false</tt>
+  #   config.active_record.record_timestamps = false
   #
-  # Timestamps are in the local timezone by default but you can use UTC by setting:
+  # Timestamps are in UTC by default but you can use the local timezone by setting:
   #
-  #   <tt>ActiveRecord::Base.default_timezone = :utc</tt>
+  #   config.active_record.default_timezone = :local
   #
   # == Time Zone aware attributes
   #
-  # By default, ActiveRecord::Base keeps all the datetime columns time zone aware by executing following code.
+  # Active Record keeps all the <tt>datetime</tt> and <tt>time</tt> columns
+  # timezone aware. By default, these values are stored in the database as UTC
+  # and converted back to the current <tt>Time.zone</tt> when pulled from the database.
   #
-  #   ActiveRecord::Base.time_zone_aware_attributes = true
+  # This feature can be turned off completely by setting:
   #
-  # This feature can easily be turned off by assigning value <tt>false</tt> .
+  #   config.active_record.time_zone_aware_attributes = false
   #
-  # If your attributes are time zone aware and you desire to skip time zone conversion for certain
-  # attributes then you can do following:
+  # You can also specify that only <tt>datetime</tt> columns should be time-zone
+  # aware (while <tt>time</tt> should not) by setting:
   #
-  #   Topic.skip_time_zone_conversion_for_attributes = [:written_on]
+  #   ActiveRecord::Base.time_zone_aware_types = [:datetime]
+  #
+  # You can also add database specific timezone aware types. For example, for PostgreSQL:
+  #
+  #   ActiveRecord::Base.time_zone_aware_types += [:tsrange, :tstzrange]
+  #
+  # Finally, you can indicate specific attributes of a model for which time zone
+  # conversion should not applied, for instance by setting:
+  #
+  #   class Topic < ActiveRecord::Base
+  #     self.skip_time_zone_conversion_for_attributes = [:written_on]
+  #   end
   module Timestamp
     extend ActiveSupport::Concern
 
     included do
-      class_inheritable_accessor :record_timestamps, :instance_writer => false
-      self.record_timestamps = true
+      class_attribute :record_timestamps, default: true
+    end
+
+    def initialize_dup(other) # :nodoc:
+      super
+      clear_timestamp_attributes
+    end
+
+    module ClassMethods # :nodoc:
+      def touch_attributes_with_time(*names, time: nil)
+        attribute_names = timestamp_attributes_for_update_in_model
+        attribute_names |= names.map(&:to_s)
+        attribute_names.index_with(time || current_time_from_proper_timezone)
+      end
+
+      def timestamp_attributes_for_create_in_model
+        @timestamp_attributes_for_create_in_model ||=
+          (timestamp_attributes_for_create & column_names).freeze
+      end
+
+      def timestamp_attributes_for_update_in_model
+        @timestamp_attributes_for_update_in_model ||=
+          (timestamp_attributes_for_update & column_names).freeze
+      end
+
+      def all_timestamp_attributes_in_model
+        @all_timestamp_attributes_in_model ||=
+          (timestamp_attributes_for_create_in_model + timestamp_attributes_for_update_in_model).freeze
+      end
+
+      def current_time_from_proper_timezone
+        ActiveRecord.default_timezone == :utc ? Time.now.utc : Time.now
+      end
+
+      private
+        def timestamp_attributes_for_create
+          ["created_at", "created_on"].map! { |name| attribute_aliases[name] || name }
+        end
+
+        def timestamp_attributes_for_update
+          ["updated_at", "updated_on"].map! { |name| attribute_aliases[name] || name }
+        end
+
+        def reload_schema_from_cache
+          @timestamp_attributes_for_create_in_model = nil
+          @timestamp_attributes_for_update_in_model = nil
+          @all_timestamp_attributes_in_model = nil
+          super
+        end
     end
 
   private
-
-    def create #:nodoc:
+    def _create_record
       if record_timestamps
         current_time = current_time_from_proper_timezone
 
-        all_timestamp_attributes.each do |column|
-          write_attribute(column.to_s, current_time) if respond_to?(column) && self.send(column).nil?
+        all_timestamp_attributes_in_model.each do |column|
+          _write_attribute(column, current_time) unless _read_attribute(column)
         end
       end
 
       super
     end
 
-    def update(*args) #:nodoc:
-      if should_record_timestamps?
+    def _update_record
+      if @_touch_record && should_record_timestamps?
         current_time = current_time_from_proper_timezone
 
         timestamp_attributes_for_update_in_model.each do |column|
-          column = column.to_s
-          next if attribute_changed?(column)
-          write_attribute(column, current_time)
+          next if will_save_change_to_attribute?(column)
+          _write_attribute(column, current_time)
         end
       end
+
+      super
+    end
+
+    def create_or_update(touch: true, **)
+      @_touch_record = touch
       super
     end
 
     def should_record_timestamps?
-      record_timestamps && (!partial_updates? || changed?)
+      record_timestamps && (!partial_updates? || has_changes_to_save?)
+    end
+
+    def timestamp_attributes_for_create_in_model
+      self.class.timestamp_attributes_for_create_in_model
     end
 
     def timestamp_attributes_for_update_in_model
-      timestamp_attributes_for_update.select { |c| respond_to?(c) }
+      self.class.timestamp_attributes_for_update_in_model
     end
 
-    def timestamp_attributes_for_update #:nodoc:
-      [:updated_at, :updated_on]
+    def all_timestamp_attributes_in_model
+      self.class.all_timestamp_attributes_in_model
     end
 
-    def timestamp_attributes_for_create #:nodoc:
-      [:created_at, :created_on]
+    def current_time_from_proper_timezone
+      self.class.current_time_from_proper_timezone
     end
 
-    def all_timestamp_attributes #:nodoc:
-      timestamp_attributes_for_create + timestamp_attributes_for_update
+    def max_updated_column_timestamp
+      timestamp_attributes_for_update_in_model
+        .filter_map { |attr| self[attr]&.to_time }
+        .max
     end
 
-    def current_time_from_proper_timezone #:nodoc:
-      self.class.default_timezone == :utc ? Time.now.utc : Time.now
+    # Clear attributes and changed_attributes
+    def clear_timestamp_attributes
+      all_timestamp_attributes_in_model.each do |attribute_name|
+        self[attribute_name] = nil
+        clear_attribute_change(attribute_name)
+      end
     end
   end
 end
-

@@ -1,60 +1,146 @@
-require 'active_support/deprecation'
-require 'active_support/ordered_options'
-require 'rails/paths'
-require 'rails/rack'
+# frozen_string_literal: true
+
+require "active_support/ordered_options"
+require "active_support/core_ext/object"
+require "rails/paths"
+require "rails/rack"
 
 module Rails
   module Configuration
-    class MiddlewareStackProxy #:nodoc:
-      def initialize
-        @operations = []
+    # MiddlewareStackProxy is a proxy for the Rails middleware stack that allows
+    # you to configure middlewares in your application. It works basically as a
+    # command recorder, saving each command to be applied after initialization
+    # over the default middleware stack, so you can add, swap, or remove any
+    # middleware in Rails.
+    #
+    # You can add your own middlewares by using the +config.middleware.use+ method:
+    #
+    #     config.middleware.use Magical::Unicorns
+    #
+    # This will put the <tt>Magical::Unicorns</tt> middleware on the end of the stack.
+    # You can use +insert_before+ if you wish to add a middleware before another:
+    #
+    #     config.middleware.insert_before Rack::Head, Magical::Unicorns
+    #
+    # There's also +insert_after+ which will insert a middleware after another:
+    #
+    #     config.middleware.insert_after Rack::Head, Magical::Unicorns
+    #
+    # Middlewares can also be completely swapped out and replaced with others:
+    #
+    #     config.middleware.swap ActionDispatch::Flash, Magical::Unicorns
+    #
+    # Middlewares can be moved from one place to another:
+    #
+    #     config.middleware.move_before ActionDispatch::Flash, Magical::Unicorns
+    #
+    # This will move the <tt>Magical::Unicorns</tt> middleware before the
+    # <tt>ActionDispatch::Flash</tt>. You can also move it after:
+    #
+    #     config.middleware.move_after ActionDispatch::Flash, Magical::Unicorns
+    #
+    # And finally they can also be removed from the stack completely:
+    #
+    #     config.middleware.delete ActionDispatch::Flash
+    #
+    class MiddlewareStackProxy
+      def initialize(operations = [], delete_operations = [])
+        @operations = operations
+        @delete_operations = delete_operations
       end
 
-      def insert_before(*args, &block)
-        @operations << [:insert_before, args, block]
+      def insert_before(...)
+        @operations << -> middleware { middleware.insert_before(...) }
       end
 
       alias :insert :insert_before
 
-      def insert_after(*args, &block)
-        @operations << [:insert_after, args, block]
+      def insert_after(...)
+        @operations << -> middleware { middleware.insert_after(...) }
       end
 
-      def swap(*args, &block)
-        @operations << [:swap, args, block]
+      def swap(...)
+        @operations << -> middleware { middleware.swap(...) }
       end
 
-      def use(*args, &block)
-        @operations << [:use, args, block]
+      def use(...)
+        @operations << -> middleware { middleware.use(...) }
       end
 
-      def delete(*args, &block)
-        @operations << [:delete, args, block]
+      def delete(...)
+        @delete_operations << -> middleware { middleware.delete(...) }
       end
 
-      def merge_into(other)
-        @operations.each do |operation, args, block|
-          other.send(operation, *args, &block)
+      def move_before(...)
+        @delete_operations << -> middleware { middleware.move_before(...) }
+      end
+
+      alias :move :move_before
+
+      def move_after(...)
+        @delete_operations << -> middleware { middleware.move_after(...) }
+      end
+
+      def unshift(...)
+        @operations << -> middleware { middleware.unshift(...) }
+      end
+
+      def merge_into(other) # :nodoc:
+        (@operations + @delete_operations).each do |operation|
+          operation.call(other)
         end
+
         other
       end
+
+      def +(other) # :nodoc:
+        MiddlewareStackProxy.new(@operations + other.operations, @delete_operations + other.delete_operations)
+      end
+
+      protected
+        attr_reader :operations, :delete_operations
     end
 
-    class Generators #:nodoc:
-      attr_accessor :aliases, :options, :templates, :fallbacks, :colorize_logging
+    class Generators # :nodoc:
+      attr_accessor :aliases, :options, :templates, :fallbacks, :colorize_logging, :api_only
+      attr_reader :hidden_namespaces, :after_generate_callbacks
 
       def initialize
-        @aliases = Hash.new { |h,k| h[k] = {} }
-        @options = Hash.new { |h,k| h[k] = {} }
+        @aliases = Hash.new { |h, k| h[k] = {} }
+        @options = Hash.new { |h, k| h[k] = {} }
         @fallbacks = {}
         @templates = []
         @colorize_logging = true
+        @api_only = false
+        @hidden_namespaces = []
+        @after_generate_callbacks = []
+      end
+
+      def initialize_copy(source)
+        @aliases = @aliases.deep_dup
+        @options = @options.deep_dup
+        @fallbacks = @fallbacks.deep_dup
+        @templates = @templates.dup
+      end
+
+      def hide_namespace(namespace)
+        @hidden_namespaces << namespace
+      end
+
+      def after_generate(&block)
+        @after_generate_callbacks << block
       end
 
       def method_missing(method, *args)
-        method = method.to_s.sub(/=$/, '').to_sym
+        method = method.to_s.delete_suffix("=").to_sym
 
-        return @options[method] if args.empty?
+        if args.empty?
+          if method == :rails
+            return @options[method]
+          else
+            return @options[:rails][method]
+          end
+        end
 
         if method == :rails || args.first.is_a?(Hash)
           namespace, configuration = method, args.shift
@@ -69,87 +155,6 @@ module Rails
           @aliases[namespace].merge!(aliases) if aliases
           @options[namespace].merge!(configuration)
         end
-      end
-    end
-
-    module Deprecated
-      def frameworks(*args)
-        raise "config.frameworks in no longer supported. See the generated " \
-              "config/boot.rb for steps on how to limit the frameworks that " \
-              "will be loaded"
-      end
-      alias :frameworks= :frameworks
-
-      def view_path=(value)
-        ActiveSupport::Deprecation.warn "config.view_path= is deprecated, " <<
-          "please do paths.app.views= instead", caller
-        paths.app.views = value
-      end
-
-      def view_path
-        ActiveSupport::Deprecation.warn "config.view_path is deprecated, " <<
-          "please do paths.app.views instead", caller
-        paths.app.views.to_a.first
-      end
-
-      def routes_configuration_file=(value)
-        ActiveSupport::Deprecation.warn "config.routes_configuration_file= is deprecated, " <<
-          "please do paths.config.routes= instead", caller
-        paths.config.routes = value
-      end
-
-      def routes_configuration_file
-        ActiveSupport::Deprecation.warn "config.routes_configuration_file is deprecated, " <<
-          "please do paths.config.routes instead", caller
-        paths.config.routes.to_a.first
-      end
-
-      def database_configuration_file=(value)
-        ActiveSupport::Deprecation.warn "config.database_configuration_file= is deprecated, " <<
-          "please do paths.config.database= instead", caller
-        paths.config.database = value
-      end
-
-      def database_configuration_file
-        ActiveSupport::Deprecation.warn "config.database_configuration_file is deprecated, " <<
-          "please do paths.config.database instead", caller
-        paths.config.database.to_a.first
-      end
-
-      def log_path=(value)
-        ActiveSupport::Deprecation.warn "config.log_path= is deprecated, " <<
-          "please do paths.log= instead", caller
-        paths.config.log = value
-      end
-
-      def log_path
-        ActiveSupport::Deprecation.warn "config.log_path is deprecated, " <<
-          "please do paths.log instead", caller
-        paths.config.log.to_a.first
-      end
-
-      def controller_paths=(value)
-        ActiveSupport::Deprecation.warn "config.controller_paths= is deprecated, " <<
-          "please do paths.app.controllers= instead", caller
-        paths.app.controllers = value
-      end
-
-      def controller_paths
-        ActiveSupport::Deprecation.warn "config.controller_paths is deprecated, " <<
-          "please do paths.app.controllers instead", caller
-        paths.app.controllers.to_a.uniq
-      end
-
-      def cookie_secret=(value)
-        ActiveSupport::Deprecation.warn "config.cookie_secret= is deprecated, " <<
-          "please use config.secret_token= instead", caller
-        self.secret_token = value
-      end
-
-      def cookie_secret
-        ActiveSupport::Deprecation.warn "config.cookie_secret is deprecated, " <<
-          "please use config.secret_token instead", caller
-        self.secret_token
       end
     end
   end

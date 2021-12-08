@@ -1,50 +1,35 @@
-require 'active_support/core_ext/module/anonymous'
-require 'active_support/core_ext/module/reachable'
+# frozen_string_literal: true
 
-class Class #:nodoc:
-  # Rubinius
-  if defined?(Class.__subclasses__)
-    alias :subclasses :__subclasses__
+require "active_support/ruby_features"
 
-    def descendants
-      descendants = []
-      __subclasses__.each do |k|
-        descendants << k
-        descendants.concat k.descendants
-      end
-      descendants
+class Class
+  # Returns an array with all classes that are < than its receiver.
+  #
+  #   class C; end
+  #   C.descendants # => []
+  #
+  #   class B < C; end
+  #   C.descendants # => [B]
+  #
+  #   class A < B; end
+  #   C.descendants # => [B, A]
+  #
+  #   class D < C; end
+  #   C.descendants # => [B, A, D]
+  def descendants
+    ObjectSpace.each_object(singleton_class).reject do |k|
+      k.singleton_class? || k == self
     end
-  else # MRI
-    begin
-      ObjectSpace.each_object(Class.new) {}
+  end unless ActiveSupport::RubyFeatures::CLASS_SUBCLASSES
 
-      def descendants
-        descendants = []
-        ObjectSpace.each_object(class << self; self; end) do |k|
-          descendants.unshift k unless k == self
-        end
-        descendants
-      end
-    rescue StandardError # JRuby
-      def descendants
-        descendants = []
-        ObjectSpace.each_object(Class) do |k|
-          descendants.unshift k if k < self
-        end
-        descendants.uniq!
-        descendants
-      end
-    end
-
-    # Returns an array with the direct children of +self+.
-    #
-    #   Integer.subclasses # => [Bignum, Fixnum]
-    def subclasses
-      subclasses, chain = [], descendants
-      chain.each do |k|
-        subclasses << k unless chain.any? { |c| c > k }
-      end
-      subclasses
-    end
-  end
+  # Returns an array with the direct children of +self+.
+  #
+  #   class Foo; end
+  #   class Bar < Foo; end
+  #   class Baz < Bar; end
+  #
+  #   Foo.subclasses # => [Bar]
+  def subclasses
+    descendants.select { |descendant| descendant.superclass == self }
+  end unless ActiveSupport::RubyFeatures::CLASS_SUBCLASSES
 end

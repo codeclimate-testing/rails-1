@@ -1,3 +1,5 @@
+# frozen_string_literal: true
+
 class String
   # Strips indentation in heredocs.
   #
@@ -15,10 +17,11 @@ class String
   #
   # the user would see the usage message aligned against the left margin.
   #
-  # Technically, it looks for the least indented line in the whole string, and removes
-  # that amount of leading whitespace.
+  # Technically, it looks for the least indented non-empty line
+  # in the whole string, and removes that amount of leading whitespace.
   def strip_heredoc
-    indent = chomp.scan(/^\s*/).min.size
-    gsub(/^\s{#{indent}}/, '')
+    gsub(/^#{scan(/^[ \t]*(?=\S)/).min}/, "").tap do |stripped|
+      stripped.freeze if frozen?
+    end
   end
 end
